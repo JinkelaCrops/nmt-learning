@@ -1742,7 +1742,7 @@ def get_iterator(src_dataset, tgt_dataset,
                  reshuffle_each_iteration=True):
     if not output_buffer_size:
         output_buffer_size = batch_size * 1000
-    src_eos_id = tf.cast(src_vocab_table.lookup(tf.constant(eos)), tf.int32)
+    src_eos_id = tf.cast(src_vocab_table.lookup(tf.constant(eos)), tf.int32)  # 转换 https://tensorflow.google.cn/versions/r1.7/api_docs/python/tf/cast
     tgt_sos_id = tf.cast(tgt_vocab_table.lookup(tf.constant(sos)), tf.int32)
     tgt_eos_id = tf.cast(tgt_vocab_table.lookup(tf.constant(eos)), tf.int32)
 
@@ -1849,7 +1849,7 @@ def get_iterator(src_dataset, tgt_dataset,
         target_output=tgt_output_ids,
         source_sequence_length=src_seq_len,
         target_sequence_length=tgt_seq_len)
-
+# TODO: here
 
 class TrainModel(collections.namedtuple("TrainModel", ("graph", "model", "iterator", "skip_count_placeholder"))):
     pass
@@ -1869,21 +1869,21 @@ def create_vocab_tables(src_vocab_file, tgt_vocab_file, share_vocab):
 
 def create_train_model(model_creator, hparams, scope=None, num_workers=1, jobid=0, extra_args=None):
     """Create train graph, model, and iterator."""
-    src_file = "%s.%s" % (hparams.train_prefix, hparams.src)
-    tgt_file = "%s.%s" % (hparams.train_prefix, hparams.tgt)
-    src_vocab_file = hparams.src_vocab_file
-    tgt_vocab_file = hparams.tgt_vocab_file
+    src_file = "%s.%s" % (hparams.train_prefix, hparams.src)  # 训练src
+    tgt_file = "%s.%s" % (hparams.train_prefix, hparams.tgt)  # 训练tgt
+    src_vocab_file = hparams.src_vocab_file  # 训练src vocab
+    tgt_vocab_file = hparams.tgt_vocab_file  # 训练tgt vocab
 
     graph = tf.Graph()
 
     with graph.as_default(), tf.container(scope or "train"):
-        src_vocab_table, tgt_vocab_table = create_vocab_tables(
-            src_vocab_file, tgt_vocab_file, hparams.share_vocab)
+        src_vocab_table, tgt_vocab_table = create_vocab_tables(src_vocab_file, tgt_vocab_file, hparams.share_vocab)  # 2个vocab, https://tensorflow.google.cn/versions/r1.7/api_docs/python/tf/contrib/lookup/index_table_from_file
 
-        src_dataset = tf.data.TextLineDataset(src_file)
+        src_dataset = tf.data.TextLineDataset(src_file)  # https://tensorflow.google.cn/versions/r1.7/api_docs/python/tf/data/TextLineDataset
         tgt_dataset = tf.data.TextLineDataset(tgt_file)
         skip_count_placeholder = tf.placeholder(shape=(), dtype=tf.int64)
 
+        # todo: here
         iterator = get_iterator(
             src_dataset,
             tgt_dataset,
@@ -2030,7 +2030,7 @@ def get_config_proto(log_device_placement=False, allow_soft_placement=True, num_
     config_proto = tf.ConfigProto(
         log_device_placement=log_device_placement,  # 记录设备指派情况 , 可以看到/job:localhost/replica:0/task:0/device:GPU:0
         allow_soft_placement=allow_soft_placement)  # 自动选择一个存在并且支持的设备来运行
-    config_proto.gpu_options.allow_growth = True    # 使用allow_growth option，刚一开始分配少量的GPU容量，然后按需慢慢的增加
+    config_proto.gpu_options.allow_growth = True  # 使用allow_growth option，刚一开始分配少量的GPU容量，然后按需慢慢的增加
 
     # CPU threads options, 不使用GPU
     # intra_op_parallelism_threads 控制运算符op内部的并行
@@ -2063,7 +2063,7 @@ def create_or_load_model(model, model_dir, session, name):
     else:
         start_time = time.time()
         session.run(tf.global_variables_initializer())  # 初始化，在之前load了model
-        session.run(tf.tables_initializer())            # 初始化table, table是什么? 应该是vocab字典 string -> index
+        session.run(tf.tables_initializer())  # 初始化table, table是什么? 应该是vocab字典 string -> index
         print("  created %s model with fresh parameters, time %.2fs" % (name, time.time() - start_time))
 
     global_step = model.global_step.eval(session=session)  # 训练轮数
@@ -2599,8 +2599,8 @@ def run_sample_decode(infer_model, infer_sess, model_dir, hparams, summary_write
     print("  # %d" % decode_id)
 
     iterator_feed_dict = {
-        infer_model.src_placeholder: [src_data[decode_id]],   # single sentence
-        infer_model.batch_size_placeholder: 1,                # feed batch size = 1
+        infer_model.src_placeholder: [src_data[decode_id]],  # single sentence
+        infer_model.batch_size_placeholder: 1,  # feed batch size = 1
     }
     infer_sess.run(infer_model.iterator.initializer, feed_dict=iterator_feed_dict)
 
@@ -2666,48 +2666,6 @@ def run_full_eval(model_dir,
                                                      avg_test_scores, hparams.metrics)
 
     return result_summary, global_step, metrics
-
-
-def init_stats():
-    """Initialize statistics that we want to accumulate."""
-    return {"step_time": 0.0, "loss": 0.0, "predict_count": 0.0,
-            "total_count": 0.0, "grad_norm": 0.0}
-
-
-def before_train(loaded_train_model, train_model, train_sess, global_step, hparams, log_f):
-    """Misc tasks to do before training."""
-    stats = init_stats()
-    info = {"train_ppl": 0.0, "speed": 0.0, "avg_step_time": 0.0,
-            "avg_grad_norm": 0.0,
-            "learning_rate": loaded_train_model.learning_rate.eval(
-                session=train_sess)}
-    start_train_time = time.time()
-    print("# Start step %d, lr %g, %s" %
-          (global_step, info["learning_rate"], time.ctime()), log_f)
-
-    # Initialize all of the iterators
-    skip_count = hparams.batch_size * hparams.epoch_step
-    print("# Init train iterator, skipping %d elements" % skip_count)
-    train_sess.run(
-        train_model.iterator.initializer,
-        feed_dict={train_model.skip_count_placeholder: skip_count})
-
-    return stats, info, start_train_time
-
-
-def update_stats(stats, start_time, step_result):
-    """Update stats: write summary and accumulate statistics."""
-    (_, step_loss, step_predict_count, step_summary, global_step,
-     step_word_count, batch_size, grad_norm, learning_rate) = step_result
-
-    # Update statistics
-    stats["step_time"] += (time.time() - start_time)
-    stats["loss"] += (step_loss * batch_size)
-    stats["predict_count"] += step_predict_count
-    stats["total_count"] += float(step_word_count)
-    stats["grad_norm"] += grad_norm
-
-    return global_step, learning_rate, step_summary
 
 
 def process_stats(stats, info, global_step, steps_per_stats, log_f):
@@ -2815,7 +2773,7 @@ print("# log_file=%s" % log_file, log_f)
 
 # tf.Session 选项
 config_proto = get_config_proto(
-    log_device_placement=log_device_placement,    # 记录设备指派情况 , 可以看到/job:localhost/replica:0/task:0/device:GPU:0
+    log_device_placement=log_device_placement,  # 记录设备指派情况 , 可以看到/job:localhost/replica:0/task:0/device:GPU:0
     num_intra_threads=hparams.num_intra_threads,  # cpu training
     num_inter_threads=hparams.num_inter_threads)  # cpu training
 # TensorFlow model, 3个graph的地址不同
@@ -2829,22 +2787,36 @@ with train_model.graph.as_default():
 # Summary writer, 记录
 summary_writer = tf.summary.FileWriter(os.path.join(out_dir, summary_name), train_model.graph)
 
-# First evaluation, test and valid(dev)
-run_full_eval(model_dir,
-              infer_model, infer_sess,
-              eval_model,  eval_sess,
-              hparams,
-              summary_writer,
-              sample_src_data, sample_tgt_data,
-              avg_ckpts)
-
+# # First evaluation, test and valid(dev)
+# run_full_eval(model_dir,
+#               infer_model, infer_sess,
+#               eval_model, eval_sess,
+#               hparams,
+#               summary_writer,
+#               sample_src_data, sample_tgt_data,
+#               avg_ckpts)
 
 last_stats_step = global_step
 last_eval_step = global_step
 last_external_eval_step = global_step
 
 # This is the training loop.
-stats, info, start_train_time = before_train(loaded_train_model, train_model, train_sess, global_step, hparams, log_f)
+"""Misc tasks to do before training."""
+stats = {"step_time": 0.0, "loss": 0.0, "predict_count": 0.0, "total_count": 0.0, "grad_norm": 0.0}
+info = {"train_ppl": 0.0, "speed": 0.0, "avg_step_time": 0.0,
+        "avg_grad_norm": 0.0,
+        "learning_rate": loaded_train_model.learning_rate.eval(
+            session=train_sess)}
+start_train_time = time.time()
+print("# Start step %d, lr %g, %s" %
+      (global_step, info["learning_rate"], time.ctime()), log_f)
+# Initialize all of the iterators
+skip_count = hparams.batch_size * hparams.epoch_step
+print("# Init train iterator, skipping %d elements" % skip_count)
+train_sess.run(
+    train_model.iterator.initializer,
+    feed_dict={train_model.skip_count_placeholder: skip_count})
+
 while global_step < num_train_steps:
     ### Run a step ###
     start_time = time.time()
@@ -2872,8 +2844,17 @@ while global_step < num_train_steps:
         continue
 
     # Process step_result, accumulate stats, and write summary
-    global_step, info["learning_rate"], step_summary = update_stats(
-        stats, start_time, step_result)
+    """Update stats: write summary and accumulate statistics."""
+    (_, step_loss, step_predict_count, step_summary, global_step,
+     step_word_count, batch_size, grad_norm, learning_rate) = step_result
+    # Update statistics
+    stats["step_time"] += (time.time() - start_time)
+    stats["loss"] += (step_loss * batch_size)
+    stats["predict_count"] += step_predict_count
+    stats["total_count"] += float(step_word_count)
+    stats["grad_norm"] += grad_norm
+    info["learning_rate"] = learning_rate
+
     summary_writer.add_summary(step_summary, global_step)
 
     # Once in a while, we print statistics.
@@ -2887,7 +2868,7 @@ while global_step < num_train_steps:
             break
 
         # Reset statistics
-        stats = init_stats()
+        stats = {"step_time": 0.0, "loss": 0.0, "predict_count": 0.0, "total_count": 0.0, "grad_norm": 0.0}
 
     if global_step - last_eval_step >= steps_per_eval:
         last_eval_step = global_step
@@ -2933,34 +2914,33 @@ loaded_train_model.saver.save(
     os.path.join(out_dir, "translate.ckpt"),
     global_step=global_step)
 
-(result_summary, _, final_eval_metrics) = (
-    run_full_eval(
-        model_dir, infer_model, infer_sess, eval_model, eval_sess, hparams,
-        summary_writer, sample_src_data, sample_tgt_data, avg_ckpts))
+result_summary, _, final_eval_metrics = run_full_eval(model_dir, infer_model, infer_sess, eval_model, eval_sess,
+                                                      hparams, summary_writer, sample_src_data, sample_tgt_data,
+                                                      avg_ckpts)
 print_step_info("# Final, ", global_step, info, result_summary, log_f)
 print("# Done training!", start_train_time)
 
 summary_writer.close()
 
-print("# Start evaluating saved best models.")
-for metric in hparams.metrics:
-    best_model_dir = getattr(hparams, "best_" + metric + "_dir")
-    summary_writer = tf.summary.FileWriter(
-        os.path.join(best_model_dir, summary_name), infer_model.graph)
-    result_summary, best_global_step, _ = run_full_eval(
-        best_model_dir, infer_model, infer_sess, eval_model, eval_sess, hparams,
-        summary_writer, sample_src_data, sample_tgt_data)
-    print_step_info("# Best %s, " % metric, best_global_step, info,
-                    result_summary, log_f)
-    summary_writer.close()
-
-    if avg_ckpts:
-        best_model_dir = getattr(hparams, "avg_best_" + metric + "_dir")
-        summary_writer = tf.summary.FileWriter(
-            os.path.join(best_model_dir, summary_name), infer_model.graph)
-        result_summary, best_global_step, _ = run_full_eval(
-            best_model_dir, infer_model, infer_sess, eval_model, eval_sess,
-            hparams, summary_writer, sample_src_data, sample_tgt_data)
-        print_step_info("# Averaged Best %s, " % metric, best_global_step, info,
-                        result_summary, log_f)
-        summary_writer.close()
+# print("# Start evaluating saved best models.")
+# for metric in hparams.metrics:
+#     best_model_dir = getattr(hparams, "best_" + metric + "_dir")
+#     summary_writer = tf.summary.FileWriter(
+#         os.path.join(best_model_dir, summary_name), infer_model.graph)
+#     result_summary, best_global_step, _ = run_full_eval(
+#         best_model_dir, infer_model, infer_sess, eval_model, eval_sess, hparams,
+#         summary_writer, sample_src_data, sample_tgt_data)
+#     print_step_info("# Best %s, " % metric, best_global_step, info,
+#                     result_summary, log_f)
+#     summary_writer.close()
+#
+#     if avg_ckpts:
+#         best_model_dir = getattr(hparams, "avg_best_" + metric + "_dir")
+#         summary_writer = tf.summary.FileWriter(
+#             os.path.join(best_model_dir, summary_name), infer_model.graph)
+#         result_summary, best_global_step, _ = run_full_eval(
+#             best_model_dir, infer_model, infer_sess, eval_model, eval_sess,
+#             hparams, summary_writer, sample_src_data, sample_tgt_data)
+#         print_step_info("# Averaged Best %s, " % metric, best_global_step, info,
+#                         result_summary, log_f)
+#         summary_writer.close()
