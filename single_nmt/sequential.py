@@ -729,6 +729,18 @@ with tf.variable_scope("build_network"):
         output_layer = layers_core.Dense(
             hparams.tgt_vocab_size, use_bias=False, name="output_projection")
 
+# Test ----------------------------------------
+sess = tf.Session()
+sess.run(tf.global_variables_initializer())
+sess.run(tf.tables_initializer())
+sess.run(iterator.initializer)
+for i in range(3):
+    once = sess.run(iterator.source)
+    print(once)
+    print(once.shape)
+sess.close()
+# ---------------------------------------------
+
 ## Train graph
 # Encoder ----------------------------------------------------------
 """Build an encoder."""
