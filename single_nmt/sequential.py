@@ -13,6 +13,7 @@ import random
 import math
 import abc
 import six
+from single_nmt.config import prefix
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
@@ -529,13 +530,13 @@ def extend_hparams(hparams):
 
 
 # make hparams ===================================================================
-my_args = """nmt.nmt \
+my_args = f"""nmt.nmt \
 --src=de --tgt=en \
---vocab_prefix=/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/vocab.bpe.32000  \
---train_prefix=/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/train.tok.bpe.32000 \
---dev_prefix=/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/newstest2016.tok.bpe.32000  \
---test_prefix=/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/newstest2015.tok.bpe.32000 \
---out_dir=/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16-model-single \
+--vocab_prefix={prefix}/wmt16/wmt16_de_en/vocab.bpe.32000  \
+--train_prefix={prefix}/wmt16/wmt16_de_en/train.tok.bpe.32000 \
+--dev_prefix={prefix}/wmt16/wmt16_de_en/newstest2016.tok.bpe.32000  \
+--test_prefix={prefix}/wmt16/wmt16_de_en/newstest2015.tok.bpe.32000 \
+--out_dir={prefix}/wmt16/wmt16-model-single \
 --attention=luong \
 --num_intra_threads=5 \
 --num_inter_threads=1 \
@@ -559,10 +560,10 @@ scope = ""
 # model_creator = AttentionModel
 # train_model = create_train_model(model_creator, hparams, scope)
 
-src_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/train.tok.bpe.32000.de"
-tgt_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/train.tok.bpe.32000.en"
-src_vocab_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/vocab.bpe.32000.de"
-tgt_vocab_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/vocab.bpe.32000.en"
+src_file = f"{prefix}/wmt16/wmt16_de_en/train.tok.bpe.32000.de"
+tgt_file = f"{prefix}/wmt16/wmt16_de_en/train.tok.bpe.32000.en"
+src_vocab_file = f"{prefix}/wmt16/wmt16_de_en/vocab.bpe.32000.de"
+tgt_vocab_file = f"{prefix}/wmt16/wmt16_de_en/vocab.bpe.32000.en"
 
 src_dataset = tf.data.TextLineDataset(src_file)
 tgt_dataset = tf.data.TextLineDataset(tgt_file)
