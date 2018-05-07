@@ -539,6 +539,7 @@ my_args = f"""nmt.nmt \
 --test_prefix={prefix}/wmt16/wmt16_de_en/newstest2015.tok.bpe.32000 \
 --out_dir={prefix}/wmt16/wmt16-model-single \
 --attention=luong \
+--learning_rate=0.01 \
 --batch_size=2 \
 --num_train_steps=4000 \
 --steps_per_stats=100 \
@@ -555,10 +556,10 @@ flags, unparsed = nmt_parser.parse_known_args(my_args)  # 传递参数，排除�
 default_hparams = create_hparams(flags)  # 转为tf的hparams
 hparams = extend_hparams(default_hparams)
 
-src_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/train.tok.bpe.32000.de"
-tgt_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/train.tok.bpe.32000.en"
-src_vocab_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/vocab.bpe.32000.de"
-tgt_vocab_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/vocab.bpe.32000.en"
+src_file = f"{prefix}/wmt16/wmt16_de_en/train.tok.bpe.32000.de"
+tgt_file = f"{prefix}/wmt16/wmt16_de_en/train.tok.bpe.32000.en"
+src_vocab_file = f"{prefix}/wmt16/wmt16_de_en/vocab.bpe.32000.de"
+tgt_vocab_file = f"{prefix}/wmt16/wmt16_de_en/vocab.bpe.32000.en"
 
 num_buckets = 5
 
@@ -1008,7 +1009,6 @@ with tf.device("/gpu:0"):
     #     print(tgt_out)
     #     print(tgt_len)
     #     print(tgt_weight)
-    #     print(ll[:, 0, tgt_out[:, 0, :]])
     #     print(i, loss)
     #     print("----------------------")
     # sess.close()
@@ -1022,8 +1022,7 @@ def _get_learning_rate_warmup(hparams, learning_rate, global_step):
     """Get learning rate warmup."""
     warmup_steps = hparams.warmup_steps
     warmup_scheme = hparams.warmup_scheme
-    print("  learning_rate=%g, warmup_steps=%d, warmup_scheme=%s" %
-          (hparams.learning_rate, warmup_steps, warmup_scheme))
+    print(" learning_rate=%g, warmup_steps=%d, warmup_scheme=%s" % (hparams.learning_rate, warmup_steps, warmup_scheme))
 
     # Apply inverse decay if global steps less than warmup steps.
     # Inspired by https://arxiv.org/pdf/1706.03762.pdf (Section 5.3)
@@ -1080,43 +1079,183 @@ def _get_learning_rate_decay(hparams, learning_rate, global_step):
 # learning rate ------------------------------------------
 word_count = tf.reduce_sum(iterator.source_sequence_length) + tf.reduce_sum(iterator.target_sequence_length)
 predict_count = tf.reduce_sum(iterator.target_sequence_length)
-global_step = tf.Variable(0, trainable=False)
+global_step_v = tf.Variable(0, trainable=False)
 params = tf.trainable_variables()
-
 # Gradients and SGD update operation for training the model.
 # Arrange for the embedding vars to appear at the beginning.
 learning_rate = tf.constant(hparams.learning_rate)
 # warm-up
-learning_rate = _get_learning_rate_warmup(hparams, learning_rate, global_step)
+learning_rate = _get_learning_rate_warmup(hparams, learning_rate, global_step_v)
 # decay
-learning_rate = _get_learning_rate_decay(hparams, learning_rate, global_step)
+learning_rate = _get_learning_rate_decay(hparams, learning_rate, global_step_v)
 # ------------------------------------------
 
 
 # Optimizer ------------------------------------------
-opt = tf.train.GradientDescentOptimizer(learning_rate)
+# opt = tf.train.GradientDescentOptimizer(learning_rate)
+opt = tf.train.AdamOptimizer(learning_rate)
 tf.summary.scalar("lr", learning_rate)
+
+
 # ----------------------------------------------------
+
+
+def gradient_clip(gradients, max_gradient_norm):
+    """Clipping gradients of a model."""
+    clipped_gradients, gradient_norm = tf.clip_by_global_norm(
+        gradients, max_gradient_norm)
+    gradient_norm_summary = [tf.summary.scalar("grad_norm", gradient_norm)]
+    gradient_norm_summary.append(
+        tf.summary.scalar("clipped_gradient", tf.global_norm(clipped_gradients)))
+
+    return clipped_gradients, gradient_norm_summary, gradient_norm
 
 
 # Gradients ------------------------------------------
 gradients = tf.gradients(train_loss, params, colocate_gradients_with_ops=hparams.colocate_gradients_with_ops)
-
 clipped_grads, grad_norm_summary, grad_norm = gradient_clip(gradients, max_gradient_norm=hparams.max_gradient_norm)
-grad_norm = grad_norm
+update = opt.apply_gradients(zip(clipped_grads, params), global_step=global_step_v)
+# ----------------------------------------------------
 
-update = opt.apply_gradients(zip(clipped_grads, params), global_step=global_step)
-#
-# # Summary
-# train_summary = tf.summary.merge([tf.summary.scalar("lr", learning_rate),
-#                                   tf.summary.scalar("train_loss", train_loss), ] + grad_norm_summary)
-#
-# # Saver
-# saver = tf.train.Saver(
-#     tf.global_variables(), max_to_keep=hparams.num_keep_ckpts)
-#
-# # Print trainable variables
-# print("# Trainable variables")
-# for param in params:
-#     print("  %s, %s, %s" % (param.name, str(param.get_shape()),
-#                             param.op.device))
+
+# Summary ------------------------------------------
+train_summary = tf.summary.merge([tf.summary.scalar("lr", learning_rate),
+                                  tf.summary.scalar("train_loss", train_loss), ] + grad_norm_summary)
+# --------------------------------------------------
+
+
+# Saver ---------------------------------------------
+saver = tf.train.Saver(tf.global_variables(), max_to_keep=hparams.num_keep_ckpts)
+# ----------------------------------------------------
+
+
+# Print trainable variables --------------------------
+print("# Trainable variables")
+for param in params:
+    print("  %s, %s, %s" % (param.name, str(param.get_shape()), param.op.device))
+# ----------------------------------------------------
+
+
+# # tf session ------------------------------------------
+config_proto = tf.ConfigProto(log_device_placement=False, allow_soft_placement=True)
+config_proto.gpu_options.allow_growth = True
+sess = tf.Session(config=config_proto)
+# --------------------------------------------------------
+
+
+# initializer ----------------------------------------------
+sess.run(tf.global_variables_initializer())
+sess.run(tf.tables_initializer())
+sess.run(iterator.initializer)
+global_step = global_step_v.eval(session=sess)
+summary_writer = tf.summary.FileWriter("tmp/train_log", sess.graph)
+
+
+# ----------------------------------------------------------
+
+
+def safe_exp(value):
+    """Exponentiation with catching of overflow error."""
+    try:
+        ans = math.exp(value)
+    except OverflowError:
+        ans = float("inf")
+    return ans
+
+
+def process_stats(stats, info, global_step, steps_per_stats):
+    """Update info and check for overflow."""
+    # Update info
+    info["avg_step_time"] = stats["step_time"] / steps_per_stats
+    info["avg_grad_norm"] = stats["grad_norm"] / steps_per_stats
+    info["train_ppl"] = safe_exp(stats["loss"] / stats["predict_count"])
+    info["speed"] = stats["total_count"] / (1000 * stats["step_time"])
+    # Check for overflow
+    is_overflow = False
+    train_ppl = info["train_ppl"]
+    if math.isnan(train_ppl) or math.isinf(train_ppl) or train_ppl > 1e20:
+        print("  step %d overflow, stop early" % global_step)
+        is_overflow = True
+    return is_overflow
+
+
+def print_step_info(prefix, global_step, info, result_summary):
+    """Print all info at the current global step."""
+    print("%sstep %d lr %g step-time %.2fs wps %.2fK ppl %.2f gN %.2f %s, %s" %
+          (prefix, global_step, info["learning_rate"], info["avg_step_time"],
+           info["speed"], info["train_ppl"], info["avg_grad_norm"], result_summary,
+           time.ctime()))
+
+
+def add_summary(summary_writer, global_step, tag, value):
+    """Add a new summary to the current summary_writer.
+    Useful to log things that are not part of the training graph, e.g., tag=BLEU.
+    """
+    summary = tf.Summary(value=[tf.Summary.Value(tag=tag, simple_value=value)])
+    summary_writer.add_summary(summary, global_step)
+
+
+# train ----------------------------------------------------
+last_stats_step = global_step
+last_eval_step = global_step
+last_external_eval_step = global_step
+# This is the training loop.
+"""Misc tasks to do before training."""
+stats = {"step_time": 0.0, "loss": 0.0, "predict_count": 0.0, "total_count": 0.0, "grad_norm": 0.0}
+info = {"train_ppl": 0.0, "speed": 0.0, "avg_step_time": 0.0, "avg_grad_norm": 0.0,
+        "learning_rate": learning_rate.eval(session=sess)}
+start_train_time = time.time()
+print("# Start step %d, lr %g, %s" % (global_step, info["learning_rate"], time.ctime()))
+while global_step < hparams.num_train_steps:
+    start_time = time.time()
+    try:
+        step_result = sess.run(
+            [update,
+             train_loss,
+             predict_count,
+             train_summary,
+             global_step_v,
+             word_count,
+             batch_size,
+             grad_norm,
+             learning_rate])
+        hparams.epoch_step += 1
+    except tf.errors.OutOfRangeError:
+        # Finished going through the training dataset.  Go to next epoch.
+        hparams.epoch_step = 0
+        sess.run(iterator.initializer)
+        continue
+    # Process step_result, accumulate stats, and write summary
+    """Update stats: write summary and accumulate statistics."""
+    _, step_loss, step_predict_count, step_summary, global_step, step_word_count, bs, gn, lr = step_result
+    # Update statistics
+    stats["step_time"] += (time.time() - start_time)
+    stats["loss"] += (step_loss * bs)
+    stats["predict_count"] += step_predict_count
+    stats["total_count"] += float(step_word_count)
+    stats["grad_norm"] += gn
+    info["learning_rate"] = lr
+    summary_writer.add_summary(step_summary, global_step)
+    # Once in a while, we print statistics.
+    if global_step - last_stats_step >= hparams.steps_per_stats:
+        last_stats_step = global_step
+        is_overflow = process_stats(stats, info, global_step, hparams.steps_per_stats)
+        print_step_info("  ", global_step, info, None)  # may be bleu
+        if is_overflow:
+            break
+        # Reset statistics
+        stats = {"step_time": 0.0, "loss": 0.0, "predict_count": 0.0, "total_count": 0.0, "grad_norm": 0.0}
+    if global_step - last_eval_step >= hparams.steps_per_stats * 10:
+        last_eval_step = global_step
+        print("# Save eval, global step %d" % global_step)
+        add_summary(summary_writer, global_step, "train_ppl", info["train_ppl"])
+        # Save checkpoint
+        saver.save(sess, "tmp/translate.ckpt", global_step=global_step)
+# -----------------------------------------------------------------------------
+
+
+# Done training ----------------------------------------------------------------
+saver.save(sess, "tmp/translate.ckpt", global_step=global_step)
+print("# Done training!", time.time() - start_train_time)
+summary_writer.close()
+# ------------------------------------------------------------------------------
