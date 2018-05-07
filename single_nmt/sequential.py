@@ -1,6 +1,7 @@
 import tensorflow as tf
 from tensorflow.python.layers import core as layers_core
 from tensorflow.python.ops import lookup_ops
+from tensorflow.contrib import seq2seq
 import argparse
 from nmt.scripts import bleu, rouge
 import numpy as np
@@ -898,9 +899,8 @@ with tf.variable_scope("decoder") as decoder_scope:
         hparams.attention, hparams.num_units, memory, iterator.source_sequence_length)
     decoder_cell = create_rnn_cell(
         unit_type=hparams.unit_type,
-        num_units=num_units,
-        num_layers=num_layers,
-        num_residual_layers=num_residual_layers,
+        num_units=hparams.num_units,
+        num_layers=hparams.num_layers,
         forget_bias=hparams.forget_bias,
         dropout=hparams.dropout,
         mode=mode)
