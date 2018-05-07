@@ -538,12 +538,11 @@ my_args = f"""nmt.nmt \
 --test_prefix={prefix}/wmt16/wmt16_de_en/newstest2015.tok.bpe.32000 \
 --out_dir={prefix}/wmt16/wmt16-model-single \
 --attention=luong \
---num_intra_threads=5 \
---num_inter_threads=1 \
---num_train_steps=3 \
+--batch_size=2 \
+--num_train_steps=4000 \
 --steps_per_stats=100 \
---num_layers=4 \
---num_units=1024 \
+--num_layers=3 \
+--num_units=4 \
 --dropout=0.2 \
 --metrics=bleu
 """.replace("=", " ").split()
@@ -555,61 +554,63 @@ flags, unparsed = nmt_parser.parse_known_args(my_args)  # 传递参数，排除�
 default_hparams = create_hparams(flags)  # 转为tf的hparams
 hparams = extend_hparams(default_hparams)
 
-scope = ""
+src_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/train.tok.bpe.32000.de"
+tgt_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/train.tok.bpe.32000.en"
+src_vocab_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/vocab.bpe.32000.de"
+tgt_vocab_file = "/media/tmxmall/a36811aa-0e87-4ba1-b14f-370134452449/wmt16/wmt16_de_en/vocab.bpe.32000.en"
 
-# model_creator = AttentionModel
-# train_model = create_train_model(model_creator, hparams, scope)
+num_buckets = 5
 
-src_file = f"{prefix}/wmt16/wmt16_de_en/train.tok.bpe.32000.de"
-tgt_file = f"{prefix}/wmt16/wmt16_de_en/train.tok.bpe.32000.en"
-src_vocab_file = f"{prefix}/wmt16/wmt16_de_en/vocab.bpe.32000.de"
-tgt_vocab_file = f"{prefix}/wmt16/wmt16_de_en/vocab.bpe.32000.en"
+time_major = hparams.time_major
 
+num_encoder_layers = hparams.num_encoder_layers
+num_decoder_layers = hparams.num_decoder_layers
+
+num_encoder_residual_layers = hparams.num_encoder_residual_layers
+num_decoder_residual_layers = hparams.num_decoder_residual_layers
+
+mode = tf.contrib.learn.ModeKeys.TRAIN
+
+# # create_train_model ----------------------
+
+# iterator -----------------------------------
 src_dataset = tf.data.TextLineDataset(src_file)
 tgt_dataset = tf.data.TextLineDataset(tgt_file)
-
 src_vocab_table = lookup_ops.index_table_from_file(src_vocab_file, default_value=UNK_ID)
 tgt_vocab_table = lookup_ops.index_table_from_file(tgt_vocab_file, default_value=UNK_ID)
-
 src_eos_id = tf.cast(src_vocab_table.lookup(tf.constant(EOS)), tf.int32)
 tgt_sos_id = tf.cast(tgt_vocab_table.lookup(tf.constant(SOS)), tf.int32)
 tgt_eos_id = tf.cast(tgt_vocab_table.lookup(tf.constant(EOS)), tf.int32)
-
 src_tgt_dataset = tf.data.Dataset.zip((src_dataset, tgt_dataset))
-
-src_tgt_dataset = src_tgt_dataset.shuffle(12800, 1234, True)
-
+src_tgt_dataset = src_tgt_dataset.shuffle(hparams.batch_size * 100, 1234, True)
 src_tgt_dataset = src_tgt_dataset.map(
     lambda src, tgt: (tf.string_split([src]).values, tf.string_split([tgt]).values),
-    num_parallel_calls=4).prefetch(12800)
-
+    num_parallel_calls=4).prefetch(hparams.batch_size * 100)
 # Filter zero length input sequences.
 src_tgt_dataset = src_tgt_dataset.filter(lambda src, tgt: tf.logical_and(tf.size(src) > 0, tf.size(tgt) > 0))
-
 src_max_len = 50
 tgt_max_len = 50
 src_tgt_dataset = src_tgt_dataset.map(lambda src, tgt: (src[:src_max_len], tgt[:tgt_max_len]),
-                                      num_parallel_calls=4).prefetch(12800)
-
+                                      num_parallel_calls=4).prefetch(hparams.batch_size * 100)
 # Convert the word strings to ids.  Word strings that are not in the
 # vocab get the lookup table's default_value integer.
 src_tgt_dataset = src_tgt_dataset.map(lambda src, tgt: (tf.cast(src_vocab_table.lookup(src), tf.int32),
                                                         tf.cast(tgt_vocab_table.lookup(tgt), tf.int32)),
-                                      num_parallel_calls=4).prefetch(12800)
+                                      num_parallel_calls=4).prefetch(hparams.batch_size * 100)
 # Create a tgt_input prefixed with <sos> and a tgt_output suffixed with <eos>.
 src_tgt_dataset = src_tgt_dataset.map(
     lambda src, tgt: (src, tf.concat(([tgt_sos_id], tgt), 0), tf.concat((tgt, [tgt_eos_id]), 0)),
-    num_parallel_calls=4).prefetch(12800)
+    num_parallel_calls=4).prefetch(hparams.batch_size * 100)
 # Add in sequence lengths.
 src_tgt_dataset = src_tgt_dataset.map(
     lambda src, tgt_in, tgt_out: (src, tgt_in, tgt_out, tf.size(src), tf.size(tgt_in)),
-    num_parallel_calls=4).prefetch(12800)
+    num_parallel_calls=4).prefetch(hparams.batch_size * 100)
 
 
 # Bucket by source sequence length (buckets for lengths 0-9, 10-19, ...)
 def batching_func(x):
     return x.padded_batch(
-        128,
+        hparams.batch_size,
         # The first three entries are the source and target line rows;
         # these have unknown-length vectors.  The last two entries are
         # the source and target row sizes; these are scalars.
@@ -628,9 +629,6 @@ def batching_func(x):
             tgt_eos_id,  # tgt_output
             0,  # src_len -- unused
             0))  # tgt_len -- unused
-
-
-num_buckets = 5
 
 
 def key_func(u1, u2, u3, src_len, tgt_len):
@@ -654,8 +652,7 @@ def reduce_func(u1, windowed_data):
 
 
 batched_dataset = src_tgt_dataset.apply(
-    tf.contrib.data.group_by_window(key_func=key_func, reduce_func=reduce_func, window_size=128))
-
+    tf.contrib.data.group_by_window(key_func=key_func, reduce_func=reduce_func, window_size=hparams.batch_size))
 batched_iter = batched_dataset.make_initializable_iterator()
 src_ids, tgt_input_ids, tgt_output_ids, src_seq_len, tgt_seq_len = batched_iter.get_next()
 
@@ -676,111 +673,212 @@ iterator = BatchedInput(
     source_sequence_length=src_seq_len,
     target_sequence_length=tgt_seq_len)
 
-# Note: One can set model_device_fn to
-# `tf.train.replica_device_setter(ps_tasks)` for distributed training.
-# model = model_creator(
-#     hparams,
-#     iterator=iterator,
-#     mode=tf.contrib.learn.ModeKeys.TRAIN,
-#     source_vocab_table=src_vocab_table,
-#     target_vocab_table=tgt_vocab_table,
-#     scope=scope)
-
-src_vocab_size = hparams.src_vocab_size
-tgt_vocab_size = hparams.tgt_vocab_size
-num_gpus = hparams.num_gpus
-time_major = hparams.time_major
-
-# Set num layers
-num_encoder_layers = hparams.num_encoder_layers
-num_decoder_layers = hparams.num_decoder_layers
-assert num_encoder_layers
-assert num_decoder_layers
-
-# Set num residual layers
-if hasattr(hparams, "num_residual_layers"):  # compatible common_test_utils
-    num_encoder_residual_layers = hparams.num_residual_layers
-    num_decoder_residual_layers = hparams.num_residual_layers
-else:
-    num_encoder_residual_layers = hparams.num_encoder_residual_layers
-    num_decoder_residual_layers = hparams.num_decoder_residual_layers
-
 batch_size = tf.size(iterator.source_sequence_length)
-mode = tf.contrib.learn.ModeKeys.TRAIN
+# ------------------------------------------
 
-# Initializer
+
+# Initializer ---------------------------------
 initializer = tf.random_uniform_initializer(-hparams.init_weight, hparams.init_weight, seed=None)
 tf.get_variable_scope().set_initializer(initializer)
+# -------------------------------------------
 
-# Embeddings
+
+# Embeddings -----------------------------------
 src_embed_size = hparams.num_units
 with tf.variable_scope("encoder"), tf.device("/gpu:0"):
     embedding_encoder = tf.get_variable(name="embedding_encoder",
-                                        shape=[src_vocab_size, src_embed_size],
+                                        shape=[hparams.src_vocab_size, src_embed_size],
                                         dtype=tf.float32)
 tgt_embed_size = hparams.num_units
 with tf.variable_scope("decoder"), tf.device("/gpu:0"):
     embedding_decoder = tf.get_variable(name="embedding_decoder",
-                                        shape=[tgt_vocab_size, tgt_embed_size],
+                                        shape=[hparams.tgt_vocab_size, tgt_embed_size],
                                         dtype=tf.float32)
+# ----------------------------------------------
 
-# Projection
+
+# Projection ------------------------------------
 with tf.variable_scope("build_network"):
     with tf.variable_scope("decoder/output_projection"):
         output_layer = layers_core.Dense(
             hparams.tgt_vocab_size, use_bias=False, name="output_projection")
 
-# Test ----------------------------------------
-sess = tf.Session()
-sess.run(tf.global_variables_initializer())
-sess.run(tf.tables_initializer())
-sess.run(iterator.initializer)
-for i in range(3):
-    once = sess.run(iterator.source)
-    print(once)
-    print(once.shape)
-sess.close()
-# ---------------------------------------------
 
-## Train graph
+# ------------------------------------------------
+
+
+# # Test ----------------------------------------
+# config_proto = tf.ConfigProto(log_device_placement=False, allow_soft_placement=True)
+# config_proto.gpu_options.allow_growth = True
+# sess = tf.Session(config=config_proto)
+# sess.run(tf.global_variables_initializer())
+# sess.run(tf.tables_initializer())
+# sess.run(iterator.initializer)
+# for i in range(3):
+#     once = sess.run(iterator.source)
+#     print(once)
+#     print(once.shape)
+# sess.close()
+# print(hparams.tgt_vocab_size)
+# # ---------------------------------------------
+
+
+def _single_cell(unit_type, num_units, forget_bias, dropout, mode):
+    """Create an instance of a single RNN cell."""
+    # dropout (= 1 - keep_prob) is set to 0 during eval and infer
+    dropout = dropout if mode == tf.contrib.learn.ModeKeys.TRAIN else 0.0
+
+    # Cell Type
+    if unit_type == "lstm":
+        print("  LSTM, forget_bias=%g" % forget_bias, end="")
+        single_cell = tf.contrib.rnn.BasicLSTMCell(
+            num_units,
+            forget_bias=forget_bias)
+    elif unit_type == "gru":
+        print("  GRU", end="")
+        single_cell = tf.contrib.rnn.GRUCell(num_units)
+    elif unit_type == "layer_norm_lstm":
+        print("  Layer Normalized LSTM, forget_bias=%g" % forget_bias,
+              end="")
+        single_cell = tf.contrib.rnn.LayerNormBasicLSTMCell(
+            num_units,
+            forget_bias=forget_bias,
+            layer_norm=True)
+    elif unit_type == "nas":
+        print("  NASCell", end="")
+        single_cell = tf.contrib.rnn.NASCell(num_units)
+    else:
+        raise ValueError("Unknown unit type %s!" % unit_type)
+
+    # Dropout (= 1 - keep_prob)
+    if dropout > 0.0:
+        single_cell = tf.contrib.rnn.DropoutWrapper(cell=single_cell, input_keep_prob=(1.0 - dropout))
+        print("  %s, dropout=%g " % (type(single_cell).__name__, dropout))
+
+    # Device Wrapper
+    single_cell = tf.contrib.rnn.DeviceWrapper(single_cell, "/gpu:0")
+
+    return single_cell
+
+
+def create_rnn_cell(unit_type, num_units, num_layers, forget_bias, dropout, mode):
+    """Create multi-layer RNN cell.
+
+    Args:
+      unit_type: string representing the unit type, i.e. "lstm".
+      num_units: the depth of each unit.
+      num_layers: number of cells.
+      num_residual_layers: Number of residual layers from top to bottom. For
+        example, if `num_layers=4` and `num_residual_layers=2`, the last 2 RNN
+        cells in the returned list will be wrapped with `ResidualWrapper`.
+      forget_bias: the initial forget bias of the RNNCell(s).
+      dropout: floating point value between 0.0 and 1.0:
+        the probability of dropout.  this is ignored if `mode != TRAIN`.
+      mode: either tf.contrib.learn.TRAIN/EVAL/INFER
+      num_gpus: The number of gpus to use when performing round-robin
+        placement of layers.
+      base_gpu: The gpu device id to use for the first RNN cell in the
+        returned list. The i-th RNN cell will use `(base_gpu + i) % num_gpus`
+        as its device id.
+      single_cell_fn: allow for adding customized cell.
+        When not specified, we default to model_helper._single_cell
+    Returns:
+      An `RNNCell` instance.
+    """
+    cell_list = []
+    for i in range(num_layers):
+        single_cell = _single_cell(
+            unit_type=unit_type,
+            num_units=num_units,
+            forget_bias=forget_bias,
+            dropout=dropout,
+            mode=mode
+        )
+        cell_list.append(single_cell)
+
+    if len(cell_list) == 1:  # Single layer.
+        return cell_list[0]
+    else:  # Multi layers
+        return tf.contrib.rnn.MultiRNNCell(cell_list)
+
+
 # Encoder ----------------------------------------------------------
 """Build an encoder."""
-
-source = iterator.source
-if time_major:  # time_major=True时[sequence_length, batch_size, embedding_size]
-    source = tf.transpose(source)
-
 with tf.variable_scope("encoder") as encoder_scope:
-    dtype = encoder_scope.dtype
-    # Look up embedding, emp_inp: [max_time, batch_size, num_units]
-    encoder_emb_inp = tf.nn.embedding_lookup(embedding_encoder, source)
-
-    # Encoder_outputs: [max_time, batch_size, num_units]
-    cell1 = create_rnn_cell(
+    # Look up embedding,
+    # iterator.source:                [batch_size, max_time]
+    # tf.transpose(iterator.source):  [max_time, batch_size]
+    # encoder_emb_inp:                [max_time, batch_size, num_units]
+    encoder_emb_inp = tf.nn.embedding_lookup(embedding_encoder, tf.transpose(iterator.source))
+    # MultiRNNCell, LSTM(num_units) * num_encoder_layers
+    encode_cell = create_rnn_cell(
         unit_type=hparams.unit_type,
         num_units=hparams.num_units,
-        num_layers=num_encoder_layers,
-        num_residual_layers=num_encoder_residual_layers,
+        num_layers=hparams.num_encoder_layers,
         forget_bias=hparams.forget_bias,
         dropout=hparams.dropout,
-        num_gpus=hparams.num_gpus,
-        mode=mode,
-        base_gpu=0,
-        single_cell_fn=None)
-
+        mode=mode)
+    # Encoder_outputs: time_major=True时，
+    # encoder_emb_inp:[max_time, batch_size, num_units]
+    # encoder_outputs:[max_time, batch_size, encode_cell.output_size]  encode_cell.output_size = num_units
     encoder_outputs, encoder_state = tf.nn.dynamic_rnn(
-        cell1,
+        encode_cell,
         encoder_emb_inp,
-        dtype=dtype,
+        dtype=encoder_scope.dtype,
         sequence_length=iterator.source_sequence_length,
-        time_major=time_major,
+        time_major=True,
         swap_memory=True)
+    # # Test ----------------------------------------
+    # config_proto = tf.ConfigProto(log_device_placement=False, allow_soft_placement=True)
+    # config_proto.gpu_options.allow_growth = True
+    # sess = tf.Session(config=config_proto)
+    # sess.run(tf.global_variables_initializer())
+    # sess.run(tf.tables_initializer())
+    # sess.run(iterator.initializer)
+    # for i in range(3):
+    #     p = sess.run([encoder_outputs, encoder_state, iterator.source_sequence_length])
+    #     print(p[0])
+    #     print(p[0].shape)
+    #     for x in p[1]:
+    #         for x0 in x:
+    #             print(x0.shape)
+    #     print(p[2])
+    #     print("----------------------")
+    # sess.close()
+    # # ---------------------------------------------
+
 
 # -----------------------------------------------------------
 
-## Decoder -------------------------------------------------
-# logits, sample_id, final_context_state = self._build_decoder(
-#     encoder_outputs, encoder_state, hparams)
+
+def create_attention_mechanism(attention_option, num_units, memory, source_sequence_length):
+    """Create attention mechanism based on the attention_option."""
+    # Mechanism
+    if attention_option == "luong":
+        attention_mechanism = seq2seq.LuongAttention(
+            num_units, memory, memory_sequence_length=source_sequence_length)
+    elif attention_option == "scaled_luong":
+        attention_mechanism = seq2seq.LuongAttention(
+            num_units,
+            memory,
+            memory_sequence_length=source_sequence_length,
+            scale=True)
+    elif attention_option == "bahdanau":
+        attention_mechanism = seq2seq.BahdanauAttention(
+            num_units, memory, memory_sequence_length=source_sequence_length)
+    elif attention_option == "normed_bahdanau":
+        attention_mechanism = seq2seq.BahdanauAttention(
+            num_units,
+            memory,
+            memory_sequence_length=source_sequence_length,
+            normalize=True)
+    else:
+        raise ValueError("Unknown attention option %s" % attention_option)
+
+    return attention_mechanism
+
+
+# Decoder -------------------------------------------------
 """Build and run a RNN decoder with a final projection layer.
 
 Args:
@@ -792,154 +890,233 @@ Returns:
   A tuple of final logits and final decoder state:
     logits: size [time, batch_size, vocab_size] when time_major=True.
 """
-tgt_sos_id = tf.cast(tgt_vocab_table.lookup(tf.constant(SOS)), tf.int32)
-tgt_eos_id = tf.cast(tgt_vocab_table.lookup(tf.constant(EOS)), tf.int32)
-
-## Decoder.
 with tf.variable_scope("decoder") as decoder_scope:
-    source_sequence_length = iterator.source_sequence_length
     """Build a RNN cell with attention mechanism that can be used by decoder."""
-    attention_option = hparams.attention
-    attention_architecture = hparams.attention_architecture
-
-    if attention_architecture != "standard":
-        raise ValueError(
-            "Unknown attention architecture %s" % attention_architecture)
-
-    num_units = hparams.num_units
-    num_layers = num_decoder_layers
-    num_residual_layers = num_decoder_residual_layers
-
-    dtype = tf.float32
-
-    # Ensure memory is batch-major
-    if time_major:
-        memory = tf.transpose(encoder_outputs, [1, 0, 2])
-    else:
-        memory = encoder_outputs
-
+    # Ensure memory is batch-major: memory: [batch_size, max_time, num_units]
+    memory = tf.transpose(encoder_outputs, [1, 0, 2])
     attention_mechanism = create_attention_mechanism(
-        attention_option, num_units, memory, source_sequence_length, mode)
-
-    cell = create_rnn_cell(
+        hparams.attention, hparams.num_units, memory, iterator.source_sequence_length)
+    decoder_cell = create_rnn_cell(
         unit_type=hparams.unit_type,
         num_units=num_units,
         num_layers=num_layers,
         num_residual_layers=num_residual_layers,
         forget_bias=hparams.forget_bias,
         dropout=hparams.dropout,
-        num_gpus=num_gpus,
-        mode=mode,
-        single_cell_fn=None)
-
-    # Only generate alignment in greedy INFER mode.
-    cell = tf.contrib.seq2seq.AttentionWrapper(
-        cell,
+        mode=mode)
+    decoder_cell = seq2seq.AttentionWrapper(
+        decoder_cell,
         attention_mechanism,
-        attention_layer_size=num_units,
+        attention_layer_size=hparams.num_units,
         alignment_history=False,
         output_attention=hparams.output_attention,
         name="attention")
-
     # TODO(thangluong): do we need num_layers, num_gpus?
-    cell = tf.contrib.rnn.DeviceWrapper(cell, "/gpu:0")
-
-    if hparams.pass_hidden_state:
-        decoder_initial_state = cell.zero_state(batch_size, dtype).clone(
-            cell_state=encoder_state)
-    else:
-        decoder_initial_state = cell.zero_state(batch_size, dtype)
-
-    ## Train or eval
-    # decoder_emp_inp: [max_time, batch_size, num_units]
-    target_input = iterator.target_input
-    if time_major:
-        target_input = tf.transpose(target_input)
-    decoder_emb_inp = tf.nn.embedding_lookup(embedding_decoder, target_input)
-
-    # Helper
-    helper = tf.contrib.seq2seq.TrainingHelper(decoder_emb_inp, iterator.target_sequence_length,
-                                               time_major=time_major)
-
-    # Decoder
-    my_decoder = tf.contrib.seq2seq.BasicDecoder(cell, helper, decoder_initial_state, )
-
-    # Dynamic decoding
-    outputs, final_context_state, _ = tf.contrib.seq2seq.dynamic_decode(
+    decoder_cell = tf.contrib.rnn.DeviceWrapper(decoder_cell, "/gpu:0")
+    # IF hparams.pass_hidden_state:
+    decoder_initial_state = decoder_cell.zero_state(batch_size, tf.float32).clone(cell_state=encoder_state)
+    # decoder_initial_state = decoder_cell.zero_state(batch_size, tf.float32)
+    # decoder_emp_inp:                    [max_time, batch_size, num_units]
+    # tf.transpose(iterator.target_input):[max_time, batch_size, num_units]
+    # 输入为target_input
+    decoder_emb_inp = tf.nn.embedding_lookup(embedding_decoder, tf.transpose(iterator.target_input))
+    # Helper import tensorflow.contrib.seq2seq.python.ops.helper
+    helper = seq2seq.TrainingHelper(decoder_emb_inp, iterator.target_sequence_length, time_major=True)
+    # Decoder import tensorflow.contrib.seq2seq.python.ops.basic_decoder
+    my_decoder = seq2seq.BasicDecoder(decoder_cell, helper, decoder_initial_state)
+    # Dynamic decoding import tensorflow.contrib.seq2seq.python.ops.decoder
+    outputs, final_context_state, _ = seq2seq.dynamic_decode(
         my_decoder,
-        output_time_major=time_major,
+        output_time_major=True,
         swap_memory=True,
         scope=decoder_scope)
-
     sample_id = outputs.sample_id
-
     # Note: there's a subtle difference here between train and inference.
     # We could have set output_layer when create my_decoder
     #   and shared more code between train and inference.
     # We chose to apply the output_layer to all timesteps for speed:
     #   10% improvements for small models & 20% for larger ones.
     # If memory is a concern, we should apply output_layer per timestep.
-    logits = output_layer(outputs.rnn_output)
+    logits = output_layer(outputs.rnn_output)  # projection
+
+    # # Test ----------------------------------------
+    # config_proto = tf.ConfigProto(log_device_placement=False, allow_soft_placement=True)
+    # config_proto.gpu_options.allow_growth = True
+    # sess = tf.Session(config=config_proto)
+    # sess.run(tf.global_variables_initializer())
+    # sess.run(tf.tables_initializer())
+    # sess.run(iterator.initializer)
+    # for i in range(3):
+    #     p_output, p_context, src_len, tgt_len = sess.run(
+    #         [outputs, final_context_state, iterator.source_sequence_length, iterator.target_sequence_length])
+    #     print("src Length:", src_len)
+    #     for k, x in enumerate(p_output):
+    #         print(p_output._fields[k], x.shape if isinstance(x, np.ndarray) else None)
+    #         print(x)
+    #     print("")
+    #     print("tgt Length:", tgt_len)
+    #     for k, x in enumerate(p_context):
+    #         print(p_context._fields[k], x.shape if isinstance(x, np.ndarray) else None)
+    #         print(x)
+    #     print("----------------------")
+    # saver = tf.train.Saver(tf.global_variables())
+    # if not os.path.exists("tmp"):
+    #     os.makedirs("tmp")
+    # saver.save(sess, "tmp/sequential.ckpt")
+    # sess.close()
+    #
+    # config_proto = tf.ConfigProto(log_device_placement=False, allow_soft_placement=True)
+    # config_proto.gpu_options.allow_growth = True
+    # sess = tf.Session(config=config_proto)
+    # latest_ckpt = tf.train.latest_checkpoint("tmp")
+    # saver = tf.train.Saver()
+    # saver.restore(sess, latest_ckpt)
+    # sess.run(tf.global_variables_initializer())
+    # sess.run(tf.tables_initializer())
+    # sess.run(iterator.initializer)
+    # print(sess.run(logits).shape)
+    # # ---------------------------------------------
 
 # ------------------------------------------------------------
 
-## Loss
-with tf.device(get_device_str(num_encoder_layers - 1, num_gpus)):
-    target_output = iterator.target_output
-    if time_major:
-        target_output = tf.transpose(target_output)
-
-
-    def get_max_time(tensor):
-        time_axis = 0 if time_major else 1
-        return tensor.shape[time_axis].value or tf.shape(tensor)[time_axis]
-
-
-    max_time = get_max_time(target_output)
-    crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=target_output, logits=logits)
+# Loss ------------------------------------------------------
+with tf.device("/gpu:0"):
+    # iterator.target_output: [batch_size, max_time]
+    max_time = iterator.target_output.shape[1].value
+    # tf.transpose(iterator.target_output): [max_time, batch_size]
+    # logits:                               [max_time, batch_size, tgt_vocab_size]
+    crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=tf.transpose(iterator.target_output),
+                                                              logits=logits)
     target_weights = tf.sequence_mask(iterator.target_sequence_length, max_time, dtype=logits.dtype)
-    if time_major:
-        target_weights = tf.transpose(target_weights)
+    target_weights = tf.transpose(target_weights)
+    # crossent:       [max_time, batch_size]
+    # target_weights: [max_time, batch_size]
     train_loss = tf.reduce_sum(crossent * target_weights) / tf.to_float(batch_size)
 
+    # # Test ----------------------------------------
+    # config_proto = tf.ConfigProto(log_device_placement=False, allow_soft_placement=True)
+    # config_proto.gpu_options.allow_growth = True
+    # sess = tf.Session(config=config_proto)
+    # sess.run(tf.global_variables_initializer())
+    # sess.run(tf.tables_initializer())
+    # sess.run(iterator.initializer)
+    # for i in range(3):
+    #     ct, tgt_weight, loss, tgt_out, tgt_len, ll = sess.run(
+    #         [crossent, target_weights, train_loss, tf.transpose(iterator.target_output),
+    #          iterator.target_sequence_length, logits])
+    #     print(ct)
+    #     print(tgt_out)
+    #     print(tgt_len)
+    #     print(tgt_weight)
+    #     print(ll[:, 0, tgt_out[:, 0, :]])
+    #     print(i, loss)
+    #     print("----------------------")
+    # sess.close()
+    # # ---------------------------------------------
+
+
+# ------------------------------------------------------
+
+
+def _get_learning_rate_warmup(hparams, learning_rate, global_step):
+    """Get learning rate warmup."""
+    warmup_steps = hparams.warmup_steps
+    warmup_scheme = hparams.warmup_scheme
+    print("  learning_rate=%g, warmup_steps=%d, warmup_scheme=%s" %
+          (hparams.learning_rate, warmup_steps, warmup_scheme))
+
+    # Apply inverse decay if global steps less than warmup steps.
+    # Inspired by https://arxiv.org/pdf/1706.03762.pdf (Section 5.3)
+    # When step < warmup_steps,
+    #   learing_rate *= warmup_factor ** (warmup_steps - step)
+    if warmup_scheme == "t2t":
+        # 0.01^(1/warmup_steps): we start with a lr, 100 times smaller
+        warmup_factor = tf.exp(tf.log(0.01) / warmup_steps)
+        inv_decay = warmup_factor ** (tf.to_float(warmup_steps - global_step))
+    else:
+        raise ValueError("Unknown warmup scheme %s" % warmup_scheme)
+
+    return tf.cond(
+        global_step < hparams.warmup_steps,
+        lambda: inv_decay * learning_rate,
+        lambda: learning_rate,
+        name="learning_rate_warump_cond")
+
+
+def _get_learning_rate_decay(hparams, learning_rate, global_step):
+    """Get learning rate decay."""
+    if hparams.decay_scheme in ["luong5", "luong10", "luong234"]:
+        decay_factor = 0.5
+        if hparams.decay_scheme == "luong5":
+            start_decay_step = int(hparams.num_train_steps / 2)
+            decay_times = 5
+        elif hparams.decay_scheme == "luong10":
+            start_decay_step = int(hparams.num_train_steps / 2)
+            decay_times = 10
+        elif hparams.decay_scheme == "luong234":
+            start_decay_step = int(hparams.num_train_steps * 2 / 3)
+            decay_times = 4
+        remain_steps = hparams.num_train_steps - start_decay_step
+        decay_steps = int(remain_steps / decay_times)
+    elif not hparams.decay_scheme:  # no decay
+        start_decay_step = hparams.num_train_steps
+        decay_steps = 0
+        decay_factor = 1.0
+    elif hparams.decay_scheme:
+        raise ValueError("Unknown decay scheme %s" % hparams.decay_scheme)
+    print("  decay_scheme=%s, start_decay_step=%d, decay_steps %d, "
+          "decay_factor %g" % (hparams.decay_scheme, start_decay_step, decay_steps, decay_factor))
+
+    return tf.cond(
+        global_step < start_decay_step,
+        lambda: learning_rate,
+        lambda: tf.train.exponential_decay(
+            learning_rate,
+            (global_step - start_decay_step),
+            decay_steps, decay_factor, staircase=True),
+        name="learning_rate_decay_cond")
+
+
+# learning rate ------------------------------------------
 word_count = tf.reduce_sum(iterator.source_sequence_length) + tf.reduce_sum(iterator.target_sequence_length)
-
-## Count the number of predicted words for compute ppl.
 predict_count = tf.reduce_sum(iterator.target_sequence_length)
-
 global_step = tf.Variable(0, trainable=False)
 params = tf.trainable_variables()
 
 # Gradients and SGD update operation for training the model.
-# Arrage for the embedding vars to appear at the beginning.
+# Arrange for the embedding vars to appear at the beginning.
 learning_rate = tf.constant(hparams.learning_rate)
 # warm-up
-# learning_rate = _get_learning_rate_warmup(hparams)
+learning_rate = _get_learning_rate_warmup(hparams, learning_rate, global_step)
 # decay
-# learning_rate = _get_learning_rate_decay(hparams)
+learning_rate = _get_learning_rate_decay(hparams, learning_rate, global_step)
+# ------------------------------------------
 
-# Optimizer
+
+# Optimizer ------------------------------------------
 opt = tf.train.GradientDescentOptimizer(learning_rate)
 tf.summary.scalar("lr", learning_rate)
+# ----------------------------------------------------
 
-# Gradients
+
+# Gradients ------------------------------------------
 gradients = tf.gradients(train_loss, params, colocate_gradients_with_ops=hparams.colocate_gradients_with_ops)
 
 clipped_grads, grad_norm_summary, grad_norm = gradient_clip(gradients, max_gradient_norm=hparams.max_gradient_norm)
 grad_norm = grad_norm
 
 update = opt.apply_gradients(zip(clipped_grads, params), global_step=global_step)
-
-# Summary
-train_summary = tf.summary.merge([tf.summary.scalar("lr", learning_rate),
-                                  tf.summary.scalar("train_loss", train_loss), ] + grad_norm_summary)
-
-# Saver
-saver = tf.train.Saver(
-    tf.global_variables(), max_to_keep=hparams.num_keep_ckpts)
-
-# Print trainable variables
-print("# Trainable variables")
-for param in params:
-    print("  %s, %s, %s" % (param.name, str(param.get_shape()),
-                            param.op.device))
+#
+# # Summary
+# train_summary = tf.summary.merge([tf.summary.scalar("lr", learning_rate),
+#                                   tf.summary.scalar("train_loss", train_loss), ] + grad_norm_summary)
+#
+# # Saver
+# saver = tf.train.Saver(
+#     tf.global_variables(), max_to_keep=hparams.num_keep_ckpts)
+#
+# # Print trainable variables
+# print("# Trainable variables")
+# for param in params:
+#     print("  %s, %s, %s" % (param.name, str(param.get_shape()),
+#                             param.op.device))

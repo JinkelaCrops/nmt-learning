@@ -3059,7 +3059,6 @@ with tf.variable_scope("decoder") as decoder_scope:
     #   10% improvements for small models & 20% for larger ones.
     # If memory is a concern, we should apply output_layer per timestep.
     logits = output_layer(outputs.rnn_output)
-
 # ------------------------------------------------------------
 
 ## Loss

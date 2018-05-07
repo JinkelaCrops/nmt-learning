@@ -3,3 +3,8 @@
 ## NMT结构分析
 
 AttentionModel
+
+* create_train_model
+    * iterator
+    * initializer
+    
